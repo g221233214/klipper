@@ -505,7 +505,8 @@ class ToolHead:
                 break
             eventtime = self.reactor.pause(eventtime + 0.100)
     def set_extruder(self, extruder, extrude_pos):
-        # XXX - should use add_extra_axis
+        self._flush_lookahead() # Ensure pending moves are processed
+        # XXX - should use add_extra_axis (comment remains for now)
         prev_ea_trapq = self.extra_axes[0].get_trapq()
         if prev_ea_trapq in self.flush_trapqs:
             self.flush_trapqs.remove(prev_ea_trapq)
@@ -514,6 +515,7 @@ class ToolHead:
         ea_trapq = extruder.get_trapq()
         if ea_trapq is not None:
             self.flush_trapqs.append(ea_trapq)
+        self.printer.send_event("toolhead:update_extra_axes") # Notify listeners
     def get_extruder(self):
         return self.extra_axes[0]
     def add_extra_axis(self, ea, axis_pos):
