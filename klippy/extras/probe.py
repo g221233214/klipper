@@ -249,21 +249,52 @@ class ProbeCommandHelper:
     cmd_PROBE_CALIBRATE_help = "Calibrate the probe's z_offset"
     def cmd_PROBE_CALIBRATE(self, gcmd):
         manual_probe.verify_no_manual_probe(self.printer)
-        params = self.probe.get_probe_params(gcmd)
-        # Perform initial probe
-        curpos = run_single_probe(self.probe, gcmd)
-        # Move away from the bed
-        self.probe_calibrate_z = curpos[2]
-        curpos[2] += 5.
-        self._move(curpos, params['lift_speed'])
-        # Move the nozzle over the probe point
-        x_offset, y_offset, z_offset = self.probe.get_offsets()
-        curpos[0] += x_offset
-        curpos[1] += y_offset
-        self._move(curpos, params['probe_speed'])
-        # Start manual probe
-        manual_probe.ManualProbeHelper(self.printer, gcmd,
-                                       self.probe_calibrate_finalize)
+        
+        # Get the tap_direct_z_offset flag for the active probe
+        active_probe_params = self.probe.active_param_helper 
+        is_tap_direct_mode = active_probe_params.tap_direct_z_offset
+
+        if is_tap_direct_mode:
+            gcmd.respond_info("TAP direct Z offset mode is active for probe '%s'."
+                              % self.probe.active_probe_name)
+            
+            # Perform initial probe
+            curpos = run_single_probe(self.probe, gcmd)
+            self.probe_calibrate_z = curpos[2] # Store the trigger Z position
+
+            # Set z_offset to 0.000
+            active_probe_section_name = self.probe.probe_endstops[
+                self.probe.active_probe_name].get_config_section_name()
+            
+            # gcode object is already available via self.printer.lookup_object('gcode')
+            # but gcmd.respond_info is sufficient for messages.
+            gcmd.respond_info(
+                "Probe %s: z_offset set to 0.000 due to TAP direct mode.\n"
+                "The SAVE_CONFIG command will update the printer config file\n"
+                "with the above and restart the printer." % (active_probe_section_name,))
+            
+            configfile = self.printer.lookup_object('configfile')
+            configfile.set(active_probe_section_name, 'z_offset', "0.000")
+            
+            # Skip manual probe steps. The original code for moving nozzle and 
+            # calling ManualProbeHelper is omitted in this branch.
+        else:
+            # Original PROBE_CALIBRATE logic
+            params = self.probe.get_probe_params(gcmd)
+            # Perform initial probe
+            curpos = run_single_probe(self.probe, gcmd)
+            # Move away from the bed
+            self.probe_calibrate_z = curpos[2]
+            curpos[2] += 5.
+            self._move(curpos, params['lift_speed'])
+            # Move the nozzle over the probe point
+            x_offset, y_offset, z_offset_unused = self.probe.get_offsets() # z_offset_unused as it's being calibrated
+            curpos[0] += x_offset
+            curpos[1] += y_offset
+            self._move(curpos, params['probe_speed'])
+            # Start manual probe
+            manual_probe.ManualProbeHelper(self.printer, gcmd,
+                                           self.probe_calibrate_finalize)
     cmd_PROBE_ACCURACY_help = "Probe Z-height accuracy at current XY position"
     def cmd_PROBE_ACCURACY(self, gcmd):
         params = self.probe.get_probe_params(gcmd)
@@ -441,6 +472,8 @@ class ProbeParameterHelper:
                                                  minval=0.)
         self.samples_retries = config.getint('samples_tolerance_retries', 0,
                                              minval=0)
+        # New parameter
+        self.tap_direct_z_offset = config.getboolean('tap_direct_z_offset', False)
     def get_probe_params(self, gcmd=None):
         if gcmd is None:
             gcmd = self.dummy_gcode_cmd

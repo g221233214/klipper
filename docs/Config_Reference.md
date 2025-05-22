@@ -2138,6 +2138,20 @@ z_offset:
 #   completes. See docs/Command_Templates.md for G-Code format. Do not
 #   issue any commands here that move the toolhead. The default is to
 #   not run any special G-Code commands on deactivation.
+#tap_direct_z_offset: False
+#   If true, enables a TAP-style Z offset calibration. This option is
+#   intended for use with well-calibrated eddy current probes that are
+#   physically configured in a TAP style (nozzle as the probe, meaning
+#   x_offset and y_offset should typically be 0). When this parameter
+#   is true, running the `PROBE_CALIBRATE` command will perform an
+#   initial automatic probe and then directly set the `z_offset` for
+#   this probe's configuration section to 0.000, bypassing the manual
+#   paper test. It is crucial that the underlying eddy current sensor
+#   (if used) has already been accurately calibrated using
+#   `PROBE_EDDY_CURRENT_CALIBRATE` before enabling this mode. Using
+#   `tap_direct_z_offset: true` with other probe types or improperly
+#   configured eddy current probes may lead to an incorrect Z offset
+#   and potential printer damage.
 ```
 
 ### Multiple Probe Configuration

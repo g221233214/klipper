@@ -55,6 +55,20 @@ surface temperature or sensor hardware temperature can skew the
 results. It is important that calibration and probing is only done
 when the printer is at a stable temperature.
 
+## TAP-style Calibration with `tap_direct_z_offset`
+
+For users employing an eddy current sensor in a 'TAP-style' physical
+configuration (where the nozzle itself is the sensed point, and
+`x_offset`/`y_offset` in the `[probe]` or `[probe_tool <name>]` section
+are set to 0), a simplified Z offset calibration process is available.
+After performing the standard `PROBE_EDDY_CURRENT_CALIBRATE` for the
+sensor, you can set `tap_direct_z_offset: true` in your `[probe]` or
+`[probe_tool <name>]` configuration section. With this enabled, running
+`PROBE_CALIBRATE` will automatically set the `z_offset` for that probe
+section to 0.000 and skip the manual paper test. This assumes the eddy
+current probe is accurately reporting the nozzle's contact point with
+the bed.
+
 ## Thermal Drift Calibration
 
 As with all inductive probes, eddy current probes are subject to
