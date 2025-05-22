@@ -246,6 +246,43 @@ class ProbeCommandHelper:
             "with the above and restart the printer." % (active_probe_section_name, z_offset))
         configfile = self.printer.lookup_object('configfile')
         configfile.set(active_probe_section_name, 'z_offset', "%.3f" % (z_offset,))
+
+    # Helper for automatic probe calibration when using an eddy current probe
+    def _auto_eddy_probe(self, start_pos, speed, threshold=0.01,
+                         settle_samples=3, step=0.02):
+        toolhead = self.printer.lookup_object('toolhead')
+        sensor = getattr(self.probe, 'sensor_helper', None)
+        if sensor is None:
+            raise self.printer.command_error(
+                "Automatic eddy probe calibration requires an eddy current probe")
+        last_val = [None]
+        stable = [0]
+        stop_flag = [False]
+
+        def handle_batch(msg):
+            if stop_flag[0]:
+                return False
+            for _, freq, _ in msg['data']:
+                if last_val[0] is not None and abs(freq - last_val[0]) < threshold:
+                    stable[0] += 1
+                else:
+                    stable[0] = 0
+                last_val[0] = freq
+                if stable[0] >= settle_samples:
+                    stop_flag[0] = True
+                    return False
+            return True
+
+        sensor.add_client(handle_batch)
+        curpos = list(start_pos)
+        while not stop_flag[0]:
+            curpos[2] -= step
+            self._move(curpos, speed)
+            toolhead.dwell(0.050)
+        toolhead.wait_moves()
+        kin = toolhead.get_kinematics()
+        kin_spos = {s.get_name(): s.get_commanded_position() for s in kin.get_steppers()}
+        return kin.calc_position(kin_spos)
     cmd_PROBE_CALIBRATE_help = "Calibrate the probe's z_offset"
     def cmd_PROBE_CALIBRATE(self, gcmd):
         manual_probe.verify_no_manual_probe(self.printer)
@@ -279,22 +316,21 @@ class ProbeCommandHelper:
             # Skip manual probe steps. The original code for moving nozzle and 
             # calling ManualProbeHelper is omitted in this branch.
         else:
-            # Original PROBE_CALIBRATE logic
             params = self.probe.get_probe_params(gcmd)
-            # Perform initial probe
             curpos = run_single_probe(self.probe, gcmd)
-            # Move away from the bed
             self.probe_calibrate_z = curpos[2]
             curpos[2] += 5.
             self._move(curpos, params['lift_speed'])
-            # Move the nozzle over the probe point
-            x_offset, y_offset, z_offset_unused = self.probe.get_offsets() # z_offset_unused as it's being calibrated
+            x_offset, y_offset, z_unused = self.probe.get_offsets()
             curpos[0] += x_offset
             curpos[1] += y_offset
             self._move(curpos, params['probe_speed'])
-            # Start manual probe
-            manual_probe.ManualProbeHelper(self.printer, gcmd,
-                                           self.probe_calibrate_finalize)
+            if hasattr(self.probe, 'sensor_helper'):
+                kin_pos = self._auto_eddy_probe(curpos, params['probe_speed'])
+                self.probe_calibrate_finalize(kin_pos)
+            else:
+                manual_probe.ManualProbeHelper(self.printer, gcmd,
+                                               self.probe_calibrate_finalize)
     cmd_PROBE_ACCURACY_help = "Probe Z-height accuracy at current XY position"
     def cmd_PROBE_ACCURACY(self, gcmd):
         params = self.probe.get_probe_params(gcmd)
