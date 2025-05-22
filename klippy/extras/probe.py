@@ -60,12 +60,165 @@ class ProbeCommandHelper:
         gcode.register_command('Z_OFFSET_APPLY_PROBE',
                                self.cmd_Z_OFFSET_APPLY_PROBE,
                                desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
+        # SET_ACTIVE_PROBE command
+        gcode.register_command('SET_ACTIVE_PROBE', self.cmd_SET_ACTIVE_PROBE,
+                               desc=self.cmd_SET_ACTIVE_PROBE_help)
+        gcode.register_command('CALIBRATE_DUAL_Z_OFFSET', self.cmd_CALIBRATE_DUAL_Z_OFFSET,
+                               desc=self.cmd_CALIBRATE_DUAL_Z_OFFSET_help)
     def _move(self, coord, speed):
         self.printer.lookup_object('toolhead').manual_move(coord, speed)
     def get_status(self, eventtime):
-        return {'name': self.name,
+        # The 'name' here refers to the config section name this helper was initialized with.
+        # If PrinterProbe was initialized with main config, this 'name' might be [probe]
+        # or the first [probe_tool*] section. This might be fine, or might need adjustment
+        # if status reports need to reflect the *currently active* probe's specific name.
+        # For now, keeping it as is.
+        return {'name': self.name, 
+                'active_probe_name': self.probe.active_probe_name if hasattr(self.probe, 'active_probe_name') else None,
                 'last_query': self.last_state,
                 'last_z_result': self.last_z_result}
+    cmd_SET_ACTIVE_PROBE_help = "Set the active probe by its configured name"
+    def cmd_SET_ACTIVE_PROBE(self, gcmd):
+        probe_name = gcmd.get_command_parameter("PROBE")
+        if not probe_name:
+            raise gcmd.error("SET_ACTIVE_PROBE requires PROBE=<name> parameter.")
+        
+        # Access the _set_active_probe method from the main PrinterProbe instance
+        if not hasattr(self.probe, '_set_active_probe'):
+            raise gcmd.error("Active probe switching is not supported by the current probe setup.")
+            
+        self.probe._set_active_probe(probe_name)
+        gcmd.respond_info("Active probe set to '%s'" % probe_name)
+
+    cmd_CALIBRATE_DUAL_Z_OFFSET_help = "Calibrates the Z offset between two probes on a dual carriage/IDEX printer."
+    def cmd_CALIBRATE_DUAL_Z_OFFSET(self,gcmd):
+        x_pos = gcmd.get_float("X")
+        y_pos = gcmd.get_float("Y")
+        if x_pos is None or y_pos is None:
+            raise gcmd.error("CALIBRATE_DUAL_Z_OFFSET requires X and Y parameters.")
+
+        primary_probe_name = gcmd.get("PRIMARY_PROBE_NAME", "0")
+        secondary_probe_name = gcmd.get("SECONDARY_PROBE_NAME", "1")
+        primary_extruder_name = gcmd.get("PRIMARY_EXTRUDER_NAME", "extruder")
+        secondary_extruder_name = gcmd.get("SECONDARY_EXTRUDER_NAME", "extruder1")
+
+        if primary_probe_name == secondary_probe_name:
+            raise gcmd.error("PRIMARY_PROBE_NAME and SECONDARY_PROBE_NAME must be different.")
+
+        if primary_probe_name not in self.probe.probe_endstops:
+            raise gcmd.error(f"Primary probe '{primary_probe_name}' not found.")
+        if secondary_probe_name not in self.probe.probe_endstops:
+            raise gcmd.error(f"Secondary probe '{secondary_probe_name}' not found.")
+
+        gcode = self.printer.lookup_object('gcode')
+        toolhead = self.printer.lookup_object('toolhead')
+        
+        lift_height = 5.0 # Standard lift height
+        
+        # Create a dummy gcmd for run_single_probe to avoid param conflicts
+        # and use default probe parameters.
+        dummy_gcmd = gcode.create_gcode_command("", "", {})
+
+        gcode.run_script_from_command("SAVE_GCODE_STATE NAME=calibrate_dual_z_offset_internal")
+        try:
+            gcmd.respond_info("Starting dual Z offset calibration...")
+            gcmd.respond_info(f"Primary Probe: {primary_probe_name}, Secondary Probe: {secondary_probe_name}")
+            gcmd.respond_info(f"Primary Extruder: {primary_extruder_name}, Secondary Extruder: {secondary_extruder_name}")
+            gcmd.respond_info(f"Probing at X={x_pos}, Y={y_pos}")
+
+            gcode.run_script_from_command("G28")
+
+            # --- Primary Probe Sequence ---
+            gcmd.respond_info(f"Activating primary extruder: {primary_extruder_name}")
+            gcode.run_script_from_command(f"ACTIVATE_EXTRUDER EXTRUDER={primary_extruder_name}")
+            
+            # Verify probe switch (event handler should have done this)
+            # A short delay might be needed if event processing isn't immediate enough,
+            # but Klipper's gcode interpreter typically waits for event handlers.
+            if self.probe.active_probe_name != primary_probe_name:
+                # Attempt to set it manually if auto switch failed or was unexpected
+                gcmd.respond_info(f"Active probe is {self.probe.active_probe_name}, expected {primary_probe_name}. Attempting manual switch...")
+                self.probe._set_active_probe(primary_probe_name) # Try to force it
+                if self.probe.active_probe_name != primary_probe_name:
+                    raise gcmd.error(
+                        f"Failed to switch to primary probe '{primary_probe_name}'. "
+                        f"Current active probe: '{self.probe.active_probe_name}'.")
+            
+            gcmd.respond_info(f"Using primary probe: {self.probe.active_probe_name}")
+            
+            # Lift before moving to XY
+            current_pos_primary = toolhead.get_position()
+            primary_probe_params = self.probe.get_probe_params(dummy_gcmd) # Get lift_speed
+            self._move([None, None, current_pos_primary[2] + lift_height], primary_probe_params['lift_speed'])
+            
+            # Move to XY
+            self._move([x_pos, y_pos, None], primary_probe_params['probe_speed']) # Use probe_speed for travel to point
+            
+            gcmd.respond_info("Probing with primary probe...")
+            pos_primary = run_single_probe(self.probe, dummy_gcmd)
+            gcmd.respond_info(f"Primary probe result: Z={pos_primary[2]:.6f}")
+
+            # Lift Z after primary probe
+            self._move([None, None, pos_primary[2] + lift_height], primary_probe_params['lift_speed'])
+
+            # --- Secondary Probe Sequence ---
+            gcmd.respond_info(f"Activating secondary extruder: {secondary_extruder_name}")
+            gcode.run_script_from_command(f"ACTIVATE_EXTRUDER EXTRUDER={secondary_extruder_name}")
+
+            if self.probe.active_probe_name != secondary_probe_name:
+                gcmd.respond_info(f"Active probe is {self.probe.active_probe_name}, expected {secondary_probe_name}. Attempting manual switch...")
+                self.probe._set_active_probe(secondary_probe_name)
+                if self.probe.active_probe_name != secondary_probe_name:
+                    raise gcmd.error(
+                        f"Failed to switch to secondary probe '{secondary_probe_name}'. "
+                        f"Current active probe: '{self.probe.active_probe_name}'.")
+
+            gcmd.respond_info(f"Using secondary probe: {self.probe.active_probe_name}")
+            
+            secondary_probe_params = self.probe.get_probe_params(dummy_gcmd)
+            current_pos_secondary = toolhead.get_position() # Get current position which might be different
+            # Lift Z again before moving to XY, relative to current Z
+            self._move([None, None, current_pos_secondary[2] + lift_height], secondary_probe_params['lift_speed'])
+            
+            # Move to XY
+            self._move([x_pos, y_pos, None], secondary_probe_params['probe_speed'])
+            
+            gcmd.respond_info("Probing with secondary probe...")
+            pos_secondary = run_single_probe(self.probe, dummy_gcmd)
+            gcmd.respond_info(f"Secondary probe result: Z={pos_secondary[2]:.6f}")
+
+            # --- Calculate and Apply Offset ---
+            trigger_z_primary = pos_primary[2]
+            trigger_z_secondary = pos_secondary[2]
+            measured_trigger_difference = trigger_z_secondary - trigger_z_primary
+            
+            gcmd.respond_info(f"Measured Z trigger difference (secondary - primary): {measured_trigger_difference:.6f} mm")
+
+            current_secondary_z_offset = self.probe.probe_offsets_helpers[secondary_probe_name].z_offset
+            # If T1's probe triggers lower (more negative measured_trigger_difference),
+            # this means T1's nozzle is effectively higher than T0's for the same probe trigger point,
+            # or its probe is "longer". To compensate, we want to make T1's nozzle go lower,
+            # which means increasing its z_offset (making it less negative or more positive).
+            # So, new_offset = current_offset - difference
+            new_secondary_z_offset = current_secondary_z_offset - measured_trigger_difference
+            
+            secondary_probe_config_section_name = self.probe.probe_endstops[
+                secondary_probe_name].get_config_section_name()
+
+            configfile = self.printer.lookup_object('configfile')
+            configfile.set(secondary_probe_config_section_name, 'z_offset', f"{new_secondary_z_offset:.3f}")
+
+            gcmd.respond_info(
+                f"Adjusted z_offset for probe '{secondary_probe_name}' (section '{secondary_probe_config_section_name}')\n"
+                f"from {current_secondary_z_offset:.3f} to {new_secondary_z_offset:.3f}\n"
+                "Run SAVE_CONFIG to make this change permanent.")
+
+        finally:
+            gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=calibrate_dual_z_offset_internal")
+            gcmd.respond_info("Dual Z offset calibration finished or aborted.")
+        
+        pass # End of command
+
     cmd_QUERY_PROBE_help = "Return the status of the z-probe"
     def cmd_QUERY_PROBE(self, gcmd):
         if self.query_endstop is None:
@@ -85,12 +238,14 @@ class ProbeCommandHelper:
             return
         z_offset = self.probe_calibrate_z - kin_pos[2]
         gcode = self.printer.lookup_object('gcode')
+        active_probe_section_name = self.probe.probe_endstops[
+            self.probe.active_probe_name].get_config_section_name()
         gcode.respond_info(
-            "%s: z_offset: %.3f\n"
+            "Probe %s: z_offset: %.3f\n"
             "The SAVE_CONFIG command will update the printer config file\n"
-            "with the above and restart the printer." % (self.name, z_offset))
+            "with the above and restart the printer." % (active_probe_section_name, z_offset))
         configfile = self.printer.lookup_object('configfile')
-        configfile.set(self.name, 'z_offset', "%.3f" % (z_offset,))
+        configfile.set(active_probe_section_name, 'z_offset', "%.3f" % (z_offset,))
     cmd_PROBE_CALIBRATE_help = "Calibrate the probe's z_offset"
     def cmd_PROBE_CALIBRATE(self, gcmd):
         manual_probe.verify_no_manual_probe(self.printer)
@@ -164,13 +319,15 @@ class ProbeCommandHelper:
             return
         z_offset = self.probe.get_offsets()[2]
         new_calibrate = z_offset - offset
+        active_probe_section_name = self.probe.probe_endstops[
+            self.probe.active_probe_name].get_config_section_name()
         gcmd.respond_info(
-            "%s: z_offset: %.3f\n"
+            "Probe %s: z_offset: %.3f\n"
             "The SAVE_CONFIG command will update the printer config file\n"
             "with the above and restart the printer."
-            % (self.name, new_calibrate))
+            % (active_probe_section_name, new_calibrate))
         configfile = self.printer.lookup_object('configfile')
-        configfile.set(self.name, 'z_offset', "%.3f" % (new_calibrate,))
+        configfile.set(active_probe_section_name, 'z_offset', "%.3f" % (new_calibrate,))
 
 # Helper to lookup the minimum Z position for the printer
 def lookup_minimum_z(config):
@@ -532,6 +689,7 @@ def run_single_probe(probe, gcmd):
 class ProbeEndstopWrapper:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self._config_section_name = config.get_name() # Store the original config section name
         self.position_endstop = config.getfloat('z_offset')
         self.stow_on_each_sample = config.getboolean(
             'deactivate_on_each_sample', True)
@@ -552,6 +710,10 @@ class ProbeEndstopWrapper:
         self.query_endstop = self.mcu_endstop.query_endstop
         # multi probes state
         self.multi = 'OFF'
+
+    def get_config_section_name(self):
+        return self._config_section_name
+
     def _raise_probe(self):
         toolhead = self.printer.lookup_object('toolhead')
         start_pos = toolhead.get_position()
@@ -590,22 +752,224 @@ class ProbeEndstopWrapper:
 class PrinterProbe:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.mcu_probe = ProbeEndstopWrapper(config)
-        self.cmd_helper = ProbeCommandHelper(config, self,
-                                             self.mcu_probe.query_endstop)
-        self.probe_offsets = ProbeOffsetsHelper(config)
-        self.param_helper = ProbeParameterHelper(config)
+        self.probe_endstops = {}
+        self.probe_offsets_helpers = {}
+        self.probe_param_helpers = {}
+        self.active_probe_name = None
+
+        probe_prefix = 'probe_tool'
+        # Get specific sections for probe_tool*
+        tool_probe_configs = config.get_printer().lookup_object(
+            'configfile').get_prefix_sections(probe_prefix)
+        # Check for the global [probe] section
+        legacy_probe_config_section = config.getsection('probe', None)
+
+        if legacy_probe_config_section is not None and tool_probe_configs:
+            raise config.error("Cannot use both [probe] and [%s*] sections. "
+                               "Please use only [%s*] sections for multiple probes "
+                               "or only [probe] for a single probe."
+                               % (probe_prefix, probe_prefix))
+
+        if not tool_probe_configs and legacy_probe_config_section is not None:
+            # Only legacy [probe] section exists
+            probe_name = "default_legacy_probe" 
+            self.active_probe_name = probe_name
+            cfg_section = legacy_probe_config_section
+            self.probe_endstops[probe_name] = ProbeEndstopWrapper(cfg_section)
+            self.probe_offsets_helpers[probe_name] = ProbeOffsetsHelper(cfg_section)
+            self.probe_param_helpers[probe_name] = ProbeParameterHelper(cfg_section)
+            logging.info("Using legacy [probe] configuration as '%s'", probe_name)
+        elif tool_probe_configs:
+            # New style [probe_tool*] sections exist
+            for section_config in tool_probe_configs:
+                section_name = section_config.get_name()
+                # Extract tool identifier, e.g. "0" from "probe_tool0"
+                # or "myprobe" from "probe_toolmyprobe"
+                probe_name_suffix = section_name.split(probe_prefix, 1)[1]
+                if not probe_name_suffix:
+                    # If section is just "probe_tool", assign a default name or error
+                    # For now, let's generate a unique-ish name, or log a warning.
+                    # This case should ideally be discouraged in documentation.
+                    probe_name = section_name + "_unnamed" 
+                    logging.warning(
+                        "Probe section '%s' does not have a suffix. "
+                        "Using generated name: '%s'", section_name, probe_name)
+                else:
+                    probe_name = probe_name_suffix
+
+                if probe_name in self.probe_endstops:
+                    raise config.error("Duplicate probe tool name: %s (from section %s)"
+                                       % (probe_name, section_name))
+                
+                self.probe_endstops[probe_name] = ProbeEndstopWrapper(section_config)
+                self.probe_offsets_helpers[probe_name] = ProbeOffsetsHelper(section_config)
+                self.probe_param_helpers[probe_name] = ProbeParameterHelper(section_config)
+                if self.active_probe_name is None:
+                    self.active_probe_name = probe_name # Set first one as active
+            if self.active_probe_name is None: # Should not happen if tool_probe_configs is not empty
+                 raise config.error("No valid [%s*] sections could be processed." % probe_prefix)
+            logging.info("Loaded %d probe tools. Active probe: '%s'",
+                         len(self.probe_endstops), self.active_probe_name)
+        else:
+            # No probe configuration found
+            raise config.error("No [probe] or [%s*] configuration sections found."
+                               % probe_prefix)
+
+        # Initialize core components with the initially active probe
+        self.mcu_probe = self.probe_endstops[self.active_probe_name]
+        self.active_probe_offsets_helper = self.probe_offsets_helpers[self.active_probe_name]
+        self.active_param_helper = self.probe_param_helpers[self.active_probe_name]
+
+        # Initialize helpers. Pass the main 'config' object for global settings,
+        # and specific active probe components where needed.
+        # ProbeCommandHelper's config is the main [probe] or [probe_tool<name>] that it's logically tied to.
+        # Since commands are registered globally, perhaps it's better to pass the main config.
+        # For now, using the main config for cmd_helper.
+        # It might need a way to access the active probe's name for messages.
+        self.cmd_helper = ProbeCommandHelper(config, self, self.mcu_probe.query_endstop)
+        
         self.homing_helper = HomingViaProbeHelper(config, self.mcu_probe,
-                                                  self.param_helper)
+                                                  self.active_param_helper)
         self.probe_session = ProbeSessionHelper(
-            config, self.param_helper, self.homing_helper.start_probe_session)
+            config, self.active_param_helper, self.homing_helper.start_probe_session)
+
+        # Register event handlers
+        self.printer.register_event_handler("klippy:connect", self._handle_connect)
+        self.printer.register_event_handler("toolhead:active_extruder_changed",
+                                            self.handle_active_extruder_changed)
+
+    def _handle_connect(self):
+        # Set initial probe based on current extruder
+        try:
+            toolhead = self.printer.lookup_object('toolhead', None)
+            if toolhead:
+                active_extruder = toolhead.get_extruder()
+                if active_extruder:
+                    active_extruder_name = active_extruder.get_name()
+                    logging.info(
+                        "Initial active extruder: %s. Attempting to set corresponding probe.",
+                        active_extruder_name)
+                    self.handle_active_extruder_changed(active_extruder_name)
+                else:
+                    logging.info("No active extruder found at connect time.")
+            else:
+                logging.info("Toolhead not found at connect time for initial probe sync.")
+        except Exception as e:
+            logging.warning("Error during initial probe sync with extruder: %s", str(e))
+
+
+    def handle_active_extruder_changed(self, active_extruder_name):
+        if not active_extruder_name:
+            logging.info("Active extruder name is None or empty. No probe change.")
+            return
+
+        probe_suffix = None
+        if active_extruder_name == 'extruder':
+            probe_suffix = '0'
+        elif active_extruder_name.startswith('extruder') and \
+             active_extruder_name[len('extruder):].isdigit():
+            probe_suffix = active_extruder_name[len('extruder'):]
+        else:
+            # Fallback for custom extruder names like "extruder_left", map to "left"
+            # This is a simple heuristic; more complex mapping might be needed for arbitrary names.
+            # Or, users could name their probes "probe_tool<extruder_name_suffix>"
+            if '_' in active_extruder_name: # e.g. extruder_hotend1 -> hotend1
+                probe_suffix = active_extruder_name.split('_',1)[1] 
+            else: # If no "extruder" prefix and no underscore, maybe the name itself is the suffix
+                probe_suffix = active_extruder_name
+
+
+        if probe_suffix is not None:
+            if probe_suffix in self.probe_endstops:
+                logging.info("Extruder changed to '%s'. Setting active probe to tool '%s'.",
+                             active_extruder_name, probe_suffix)
+                try:
+                    self._set_active_probe(probe_suffix)
+                except Exception as e: # Catch potential errors from _set_active_probe
+                    logging.error("Error setting active probe to '%s': %s", probe_suffix, e)
+            else:
+                # Check if legacy probe "default_legacy_probe" should be activated
+                # e.g. if extruder is "extruder" (tool 0) and "probe_tool0" doesn't exist
+                # but "default_legacy_probe" does.
+                if probe_suffix == '0' and "default_legacy_probe" in self.probe_endstops and \
+                   not ('0' in self.probe_endstops and self.probe_endstops['0'] is not self.probe_endstops["default_legacy_probe"]):
+                    logging.info("Extruder changed to '%s'. No specific probe tool '%s' found. "
+                                 "Activating 'default_legacy_probe'.",
+                                 active_extruder_name, probe_suffix)
+                    try:
+                        self._set_active_probe("default_legacy_probe")
+                    except Exception as e:
+                         logging.error("Error setting active probe to 'default_legacy_probe': %s", e)
+                else:
+                    logging.warning("Extruder changed to '%s', but no corresponding probe tool '%s' "
+                                    "or applicable default_legacy_probe found.",
+                                    active_extruder_name, probe_suffix)
+        else:
+            logging.warning("Could not determine probe suffix for extruder '%s'. No probe change.",
+                            active_extruder_name)
+
+    def _set_active_probe(self, probe_name):
+        if probe_name not in self.probe_endstops:
+            raise self.printer.command_error( # Use command_error for gcode callable context
+                "Probe tool '%s' not configured." % probe_name)
+        
+        if self.active_probe_name == probe_name:
+            # No change needed
+            logging.info("Probe tool '%s' is already active.", probe_name)
+            return
+
+        logging.info("Setting active probe to '%s'", probe_name)
+        self.active_probe_name = probe_name
+        
+        # Update core components
+        self.mcu_probe = self.probe_endstops[self.active_probe_name]
+        self.active_probe_offsets_helper = self.probe_offsets_helpers[self.active_probe_name]
+        self.active_param_helper = self.probe_param_helpers[self.active_probe_name]
+
+        # Update helper objects that depend on the active probe
+        # 1. Update ProbeCommandHelper's query_endstop source
+        #    Directly updating the attribute. This assumes query_endstop is accessed as self.query_endstop
+        #    within ProbeCommandHelper's methods.
+        if self.cmd_helper is not None:
+             self.cmd_helper.query_endstop = self.mcu_probe.query_endstop
+        
+        # 2. Re-initialize HomingViaProbeHelper
+        #    This helper registers event handlers. Klipper's event system typically
+        #    replaces handlers if the same method is registered for an event.
+        #    However, to be safe, if HomingViaProbeHelper had a cleanup method,
+        #    it would be called here. For now, direct re-initialization.
+        #    We need the main config object that was used to init PrinterProbe.
+        main_config = self.printer.lookup_object('configfile').get_config()
+        self.homing_helper = HomingViaProbeHelper(main_config, self.mcu_probe,
+                                                  self.active_param_helper)
+        
+        # 3. Re-initialize ProbeSessionHelper
+        #    This depends on the active_param_helper and the new homing_helper's
+        #    start_probe_session method.
+        self.probe_session = ProbeSessionHelper(
+            main_config, self.active_param_helper, self.homing_helper.start_probe_session)
+        
+        self.printer.send_event("probe:active_probe_changed", self.active_probe_name)
+        logging.info("Active probe changed to '%s'", self.active_probe_name)
+
     def get_probe_params(self, gcmd=None):
-        return self.param_helper.get_probe_params(gcmd)
+        return self.active_param_helper.get_probe_params(gcmd)
+
     def get_offsets(self):
-        return self.probe_offsets.get_offsets()
+        return self.active_probe_offsets_helper.get_offsets()
+
     def get_status(self, eventtime):
+        # cmd_helper.name might need to be updated if it's tied to a specific section name
+        # For now, it uses the name of the config section it was initialized with.
+        # This might be okay if cmd_helper is mostly generic.
         return self.cmd_helper.get_status(eventtime)
+
     def start_probe_session(self, gcmd):
+        # Ensure probe_session uses the currently active param_helper and homing_helper
+        # This implies that if the active probe changes, probe_session might need to be
+        # reconfigured or recreated if its internal state is tied to a specific probe's params.
+        # For now, assuming it uses the active_param_helper passed at its init.
+        # If active_param_helper is a reference that PrinterProbe updates, it should be fine.
         return self.probe_session.start_probe_session(gcmd)
 
 def load_config(config):

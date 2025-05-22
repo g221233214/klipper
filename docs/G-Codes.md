@@ -1157,6 +1157,64 @@ babystepping), and subtract if from the probe's z_offset.  This acts
 to take a frequently used babystepping value, and "make it permanent".
 Requires a `SAVE_CONFIG` to take effect.
 
+#### SET_ACTIVE_PROBE
+`SET_ACTIVE_PROBE PROBE=<name>`: Manually activate a specific probe for
+subsequent probing operations.
+- `PROBE=<name>`: (string, mandatory) The suffix of the probe to activate
+  (e.g., "0" for `[probe_tool0]`, "left" for `[probe_toolleft]`).
+This command switches all subsequent probing operations to use the
+configuration of the specified probe. This active probe remains in effect
+until the active extruder changes (which may trigger an automatic probe switch)
+or until another `SET_ACTIVE_PROBE` command is issued. This is useful for
+debugging or for calibration routines that require a specific probe to be used
+independently of the active extruder.
+
+#### CALIBRATE_DUAL_Z_OFFSET
+`CALIBRATE_DUAL_Z_OFFSET X=<x_pos> Y=<y_pos> [PRIMARY_PROBE_NAME=<name>]
+[SECONDARY_PROBE_NAME=<name>] [PRIMARY_EXTRUDER_NAME=<name>]
+[SECONDARY_EXTRUDER_NAME=<name>]`: Calibrates the Z-offset difference
+between two toolheads/probes on a multi-extruder printer (e.g., IDEX or
+dual carriage).
+- `X=<x_pos>`: (float, mandatory) The X-coordinate on the bed where probing
+  will be performed.
+- `Y=<y_pos>`: (float, mandatory) The Y-coordinate on the bed where probing
+  will be performed.
+- `PRIMARY_PROBE_NAME=<name>`: (string, optional, default: "0") The suffix
+  of the probe configuration section for the primary tool/probe (e.g., "0"
+  for `[probe_tool0]`). This probe's `z_offset` is treated as the reference.
+- `SECONDARY_PROBE_NAME=<name>`: (string, optional, default: "1") The suffix
+  of the probe configuration section for the secondary tool/probe (e.g., "1"
+  for `[probe_tool1]`). This probe's `z_offset` will be adjusted by this
+  calibration.
+- `PRIMARY_EXTRUDER_NAME=<name>`: (string, optional, default: "extruder")
+  The config name of the extruder associated with the primary probe. This
+  extruder will be activated before probing with the primary probe.
+- `SECONDARY_EXTRUDER_NAME=<name>`: (string, optional, default: "extruder1")
+  The config name of the extruder associated with the secondary probe. This
+  extruder will be activated before probing with the secondary probe.
+
+The command performs the following sequence:
+1. Saves current G-code state and homes all axes.
+2. Activates the `PRIMARY_EXTRUDER_NAME`, which should also activate the
+   `PRIMARY_PROBE_NAME`.
+3. Probes the bed at the specified `X, Y` coordinate using the primary probe.
+4. Activates the `SECONDARY_EXTRUDER_NAME`, which should also activate the
+   `SECONDARY_PROBE_NAME`.
+5. Probes the bed at the same `X, Y` coordinate using the secondary probe.
+6. Calculates the difference in the Z trigger heights between the two probes.
+7. Adjusts the `z_offset` parameter in the configuration section of the
+   `SECONDARY_PROBE_NAME` to compensate for this difference. The primary
+   probe's `z_offset` remains unchanged.
+8. Reports the measured difference and the new `z_offset` for the secondary
+   probe.
+9. Restores the G-code state.
+
+**Usage Note:** After running `CALIBRATE_DUAL_Z_OFFSET`, you must run
+`SAVE_CONFIG` to make the new Z-offset for the secondary probe persistent.
+
+**Example:**
+`CALIBRATE_DUAL_Z_OFFSET X=100 Y=100 PRIMARY_PROBE_NAME=0 SECONDARY_PROBE_NAME=1`
+
 ### [probe_eddy_current]
 
 The following commands are available when a

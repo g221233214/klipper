@@ -1,0 +1,444 @@
+# Unit tests for Klipper multiple probe handling
+import pytest
+import klippy.extras.probe as probe
+import klippy.test_utils as k_test_utils
+import klippy.config as k_config
+
+# Helper function to create a mock printer object and load probe config
+def load_probe_config(config_str):
+    cfg = k_test_utils.get_config(config_str)
+    printer = k_test_utils.get_printer()
+    # Mock necessary printer objects if probe.py expects them
+    printer.add_object('configfile', cfg) # PrinterProbe uses this to get prefix sections
+    printer.load_object(cfg, 'gcode_macro') # ProbeEndstopWrapper uses this
+    printer.load_object(cfg, 'pins') # ProbeEndstopWrapper uses this
+    printer.load_object(cfg, 'toolhead') # For initial sync, event handling
+    printer.load_object(cfg, 'homing') # For HomingViaProbeHelper
+    printer.load_object(cfg, 'gcode_move') # For Z_OFFSET_APPLY_PROBE
+    
+    # Ensure necessary sections for dependencies are present if not in config_str
+    if not cfg.has_section('printer'):
+        cfg.add_section('printer')
+        cfg.set('printer', 'kinematics', 'cartesian')
+        cfg.set('printer', 'max_velocity', '100')
+        cfg.set('printer', 'max_accel', '100')
+    if not cfg.has_section('stepper_z'):
+        cfg.add_section('stepper_z')
+        cfg.set('stepper_z', 'endstop_pin', 'ar2') # dummy pin
+        cfg.set('stepper_z', 'step_pin', 'ar0')
+        cfg.set('stepper_z', 'dir_pin', 'ar1')
+
+
+    # Register PrinterProbe as an object Klipper can find
+    printer.add_object('probe', probe.PrinterProbe(cfg.getsection('probe') if cfg.has_section('probe') else cfg))
+    return printer.lookup_object('probe'), printer, cfg
+
+def test_legacy_probe_loading():
+    config_str = """
+[probe]
+pin: ar10
+z_offset: 5.0
+speed: 10.0
+lift_speed: 15.0
+samples: 2
+"""
+    probe_obj, printer, _ = load_probe_config(config_str)
+    assert probe_obj.active_probe_name == "default_legacy_probe"
+    assert "default_legacy_probe" in probe_obj.probe_endstops
+    assert "default_legacy_probe" in probe_obj.probe_offsets_helpers
+    assert "default_legacy_probe" in probe_obj.probe_param_helpers
+
+    legacy_endstop = probe_obj.probe_endstops["default_legacy_probe"]
+    legacy_offsets = probe_obj.probe_offsets_helpers["default_legacy_probe"]
+    legacy_params = probe_obj.probe_param_helpers["default_legacy_probe"]
+
+    assert legacy_endstop.mcu_endstop.get_pin_name() == "ar10"
+    assert legacy_offsets.z_offset == 5.0
+    assert legacy_params.speed == 10.0
+    assert legacy_params.lift_speed == 15.0
+    assert legacy_params.sample_count == 2
+    assert probe_obj.mcu_probe is legacy_endstop
+    assert probe_obj.active_probe_offsets_helper is legacy_offsets
+    assert probe_obj.active_param_helper is legacy_params
+
+def test_multiple_probes_loading():
+    config_str = """
+[probe_tool0]
+pin: ^ar20
+z_offset: 1.0
+x_offset: 10
+speed: 5.0
+lift_speed: 7.0
+
+[probe_tool1]
+pin: !ar21
+z_offset: 2.5
+y_offset: -15
+speed: 8.0
+samples: 3
+"""
+    probe_obj, printer, _ = load_probe_config(config_str)
+    assert probe_obj.active_probe_name == "0" # First one is active by default
+    assert "0" in probe_obj.probe_endstops
+    assert "1" in probe_obj.probe_endstops
+
+    # Probe 0 checks
+    probe0_endstop = probe_obj.probe_endstops["0"]
+    probe0_offsets = probe_obj.probe_offsets_helpers["0"]
+    probe0_params = probe_obj.probe_param_helpers["0"]
+    assert probe0_endstop.mcu_endstop.get_pin_name() == "ar20" # Pin inversion removed for name
+    assert probe0_offsets.z_offset == 1.0
+    assert probe0_offsets.x_offset == 10.0
+    assert probe0_offsets.y_offset == 0.0 # default
+    assert probe0_params.speed == 5.0
+    assert probe0_params.lift_speed == 7.0
+    assert probe0_params.sample_count == 1 # default
+
+    # Probe 1 checks
+    probe1_endstop = probe_obj.probe_endstops["1"]
+    probe1_offsets = probe_obj.probe_offsets_helpers["1"]
+    probe1_params = probe_obj.probe_param_helpers["1"]
+    assert probe1_endstop.mcu_endstop.get_pin_name() == "ar21" # Pin inversion removed for name
+    assert probe1_offsets.z_offset == 2.5
+    assert probe1_offsets.x_offset == 0.0 # default
+    assert probe1_offsets.y_offset == -15.0
+    assert probe1_params.speed == 8.0
+    assert probe1_params.sample_count == 3
+
+    # Check active probe is probe0
+    assert probe_obj.mcu_probe is probe0_endstop
+    assert probe_obj.active_probe_offsets_helper is probe0_offsets
+    assert probe_obj.active_param_helper is probe0_params
+
+
+def test_config_conflict_detection():
+    config_str = """
+[probe]
+pin: ar10
+z_offset: 5.0
+
+[probe_tool0]
+pin: ar20
+z_offset: 1.0
+"""
+    with pytest.raises(k_config.error, match="Cannot use both"):
+        load_probe_config(config_str)
+
+def test_no_probes_config():
+    config_str = """
+[printer]
+kinematics: cartesian
+max_velocity: 100
+max_accel: 100
+"""
+    # Modify load_probe_config slightly for this one case or ensure it handles it
+    cfg = k_test_utils.get_config(config_str)
+    printer = k_test_utils.get_printer()
+    printer.add_object('configfile', cfg)
+    printer.load_object(cfg, 'gcode_macro')
+    printer.load_object(cfg, 'pins')
+    
+    with pytest.raises(k_config.error, match="No \\[probe\\] or .* configuration sections found"):
+        # PrinterProbe is not added to printer.objects if it fails init
+        probe.PrinterProbe(cfg)
+
+
+def test_probe_tool_unnamed_suffix():
+    config_str = """
+[probe_tool] 
+pin: ar22
+z_offset: 3.0
+"""
+    probe_obj, printer, _ = load_probe_config(config_str)
+    # Default name generation for "probe_tool" is "probe_tool_unnamed"
+    expected_probe_name = "probe_tool_unnamed" 
+    assert probe_obj.active_probe_name == expected_probe_name
+    assert expected_probe_name in probe_obj.probe_endstops
+    assert probe_obj.probe_endstops[expected_probe_name].mcu_endstop.get_pin_name() == "ar22"
+    assert probe_obj.probe_offsets_helpers[expected_probe_name].z_offset == 3.0
+
+def test_probe_tool_custom_suffix():
+    config_str = """
+[probe_toolmyprobe]
+pin: ar23
+z_offset: 4.0
+"""
+    probe_obj, printer, _ = load_probe_config(config_str)
+    expected_probe_name = "myprobe"
+    assert probe_obj.active_probe_name == expected_probe_name
+    assert expected_probe_name in probe_obj.probe_endstops
+    assert probe_obj.probe_endstops[expected_probe_name].mcu_endstop.get_pin_name() == "ar23"
+    assert probe_obj.probe_offsets_helpers[expected_probe_name].z_offset == 4.0
+
+def test_duplicate_probe_tool_name_error():
+    config_str = """
+[probe_tool0]
+pin: ar20
+z_offset: 1.0
+
+[probe_tool0] 
+pin: ar21 
+z_offset: 2.0
+"""
+    with pytest.raises(k_config.error, match="Duplicate probe tool name: 0"):
+        load_probe_config(config_str)
+
+# Minimal [printer] section for tests that don't specify it
+MINIMAL_PRINTER_CONFIG = """
+[printer]
+kinematics: cartesian
+max_velocity: 1000
+max_accel: 1000
+"""
+
+# Minimal [stepper_z] for HomingViaProbeHelper
+MINIMAL_STEPPER_Z_CONFIG = """
+[stepper_z]
+endstop_pin: ar2
+step_pin: ar0
+dir_pin: ar1
+position_endstop: 0
+position_min: -5
+"""
+
+# Minimal config for switching tests
+MULTI_PROBE_CONFIG_FOR_SWITCHING = MINIMAL_PRINTER_CONFIG + MINIMAL_STEPPER_Z_CONFIG + """
+[probe_tool0]
+pin: ^ar20
+z_offset: 1.0
+x_offset: 10
+speed: 5.0
+lift_speed: 7.0
+
+[probe_tool1]
+pin: !ar21
+z_offset: 2.5
+y_offset: -15
+speed: 8.0
+samples: 3
+"""
+
+def test_manual_active_probe_switching():
+    probe_obj, printer, cfg = load_probe_config(MULTI_PROBE_CONFIG_FOR_SWITCHING)
+    gcode = printer.lookup_object('gcode')
+
+    # Initial state: probe 0 should be active
+    assert probe_obj.active_probe_name == "0"
+    assert probe_obj.mcu_probe is probe_obj.probe_endstops["0"]
+
+    # Switch to probe 1
+    gcode.run_script_from_command("SET_ACTIVE_PROBE PROBE=1")
+    assert probe_obj.active_probe_name == "1"
+    assert probe_obj.mcu_probe is probe_obj.probe_endstops["1"]
+    assert probe_obj.active_probe_offsets_helper is probe_obj.probe_offsets_helpers["1"]
+    assert probe_obj.active_param_helper is probe_obj.probe_param_helpers["1"]
+    
+    offsets_1 = probe_obj.get_offsets()
+    params_1 = probe_obj.get_probe_params()
+    assert offsets_1[2] == 2.5 # z_offset for probe_tool1
+    assert params_1['speed'] == 8.0 # speed for probe_tool1
+
+    # Switch back to probe 0
+    gcode.run_script_from_command("SET_ACTIVE_PROBE PROBE=0")
+    assert probe_obj.active_probe_name == "0"
+    assert probe_obj.mcu_probe is probe_obj.probe_endstops["0"]
+    
+    offsets_0 = probe_obj.get_offsets()
+    params_0 = probe_obj.get_probe_params()
+    assert offsets_0[2] == 1.0 # z_offset for probe_tool0
+    assert params_0['speed'] == 5.0 # speed for probe_tool0
+
+    # Test switching to a non-existent probe
+    with pytest.raises(Exception, match="Probe tool 'invalid_probe' not configured"):
+        gcode.run_script_from_command("SET_ACTIVE_PROBE PROBE=invalid_probe")
+    assert probe_obj.active_probe_name == "0" # Should remain unchanged
+
+
+def test_automatic_probe_switching_via_event():
+    probe_obj, printer, cfg = load_probe_config(MULTI_PROBE_CONFIG_FOR_SWITCHING)
+    
+    # Initial state: probe 0 should be active
+    assert probe_obj.active_probe_name == "0"
+
+    # Simulate toolhead event for extruder1 (maps to probe_tool1)
+    printer.send_event("toolhead:active_extruder_changed", "extruder1")
+    assert probe_obj.active_probe_name == "1"
+    assert probe_obj.mcu_probe is probe_obj.probe_endstops["1"]
+    assert probe_obj.get_offsets()[2] == 2.5 # probe_tool1 z_offset
+
+    # Simulate toolhead event for extruder (maps to probe_tool0)
+    printer.send_event("toolhead:active_extruder_changed", "extruder")
+    assert probe_obj.active_probe_name == "0"
+    assert probe_obj.mcu_probe is probe_obj.probe_endstops["0"]
+    assert probe_obj.get_offsets()[2] == 1.0 # probe_tool0 z_offset
+
+    # Simulate event with an unmapped extruder
+    printer.send_event("toolhead:active_extruder_changed", "extruder_unmapped")
+    assert probe_obj.active_probe_name == "0" # Should remain unchanged (with a warning log)
+
+def test_initial_probe_sync_on_connect():
+    # Setup: Configure toolhead to have 'extruder1' active BEFORE connect event
+    config_str_connect_test = MINIMAL_PRINTER_CONFIG + MINIMAL_STEPPER_Z_CONFIG + """
+[extruder]
+step_pin: ar_e0_step
+dir_pin: ar_e0_dir
+
+[extruder1]
+step_pin: ar_e1_step
+dir_pin: ar_e1_dir
+
+[probe_tool0]
+pin: ar20
+z_offset: 1.0
+
+[probe_tool1]
+pin: ar21
+z_offset: 2.5
+"""
+    probe_obj, printer, cfg = load_probe_config(config_str_connect_test)
+    toolhead = printer.lookup_object('toolhead')
+    extruder1 = printer.load_object(cfg.getsection('extruder1'), 'extruder1') 
+    
+    # Manually set active extruder in toolhead before connect event
+    # This simulates the state Klipper might be in after full config load but before 'connect' handlers run
+    toolhead.extra_axes[0] = extruder1 # Directly set extruder1 as active
+    
+    # At this point, probe_obj.active_probe_name is still '0' (default from its own init)
+    assert probe_obj.active_probe_name == "0" 
+    
+    # Send connect event - this should trigger _handle_connect in PrinterProbe
+    printer.send_event("klippy:connect")
+    
+    # Verify probe switched to "1" due to extruder1 being active
+    assert probe_obj.active_probe_name == "1"
+    assert probe_obj.mcu_probe is probe_obj.probe_endstops["1"]
+    assert probe_obj.get_offsets()[2] == 2.5
+
+from unittest import mock # Required for patching
+
+# Config for CALIBRATE_DUAL_Z_OFFSET tests
+CALIBRATE_DUAL_Z_CONFIG = MINIMAL_PRINTER_CONFIG + MINIMAL_STEPPER_Z_CONFIG + """
+[probe_tool0]
+pin: ar10
+z_offset: 1.0
+x_offset: 5.0 # For primary probe
+speed: 10
+
+[probe_tool1]
+pin: ar11
+z_offset: 2.0 # Initial z_offset for secondary probe
+y_offset: -5.0 # For secondary probe
+speed: 10
+
+[extruder]
+step_pin: ar_e0_step
+dir_pin: ar_e0_dir
+
+[extruder1]
+step_pin: ar_e1_step
+dir_pin: ar_e1_dir
+"""
+
+@mock.patch('klippy.extras.probe.run_single_probe')
+@mock.patch('klippy.extras.homing.Homing.home_rails') # Mock homing sequence
+def test_calibrate_dual_z_offset(mock_home_rails, mock_run_single_probe):
+    probe_obj, printer, cfg = load_probe_config(CALIBRATE_DUAL_Z_CONFIG)
+    gcode = printer.lookup_object('gcode')
+    configfile = printer.lookup_object('configfile')
+    
+    # Scenario 1: Secondary probe triggers lower
+    # T0 Z=0.2, T1 Z=0.1. Expected new T1 z_offset = 2.0 - (0.1 - 0.2) = 2.1
+    mock_run_single_probe.side_effect = [
+        ([10, 10, 0.2],), # Primary probe result (pos_primary)
+        ([10, 10, 0.1],)  # Secondary probe result (pos_secondary)
+    ]
+    with mock.patch.object(configfile, 'set') as mock_config_set:
+        gcode.run_script_from_command("CALIBRATE_DUAL_Z_OFFSET X=10 Y=10")
+        mock_config_set.assert_any_call("probe_tool1", "z_offset", "2.100")
+
+    # Scenario 2: Secondary probe triggers higher
+    # T0 Z=0.2, T1 Z=0.3. Expected new T1 z_offset = 2.0 - (0.3 - 0.2) = 1.9
+    mock_run_single_probe.side_effect = [
+        ([10, 10, 0.2],), 
+        ([10, 10, 0.3],)  
+    ]
+    with mock.patch.object(configfile, 'set') as mock_config_set:
+        gcode.run_script_from_command("CALIBRATE_DUAL_Z_OFFSET X=10 Y=10")
+        mock_config_set.assert_any_call("probe_tool1", "z_offset", "1.900")
+
+    # Scenario 3: Same height
+    # T0 Z=0.2, T1 Z=0.2. Expected new T1 z_offset = 2.0 - (0.2 - 0.2) = 2.0
+    mock_run_single_probe.side_effect = [
+        ([10, 10, 0.2],), 
+        ([10, 10, 0.2],)  
+    ]
+    with mock.patch.object(configfile, 'set') as mock_config_set:
+        gcode.run_script_from_command("CALIBRATE_DUAL_Z_OFFSET X=10 Y=10")
+        mock_config_set.assert_any_call("probe_tool1", "z_offset", "2.000")
+    
+    # Scenario 4: Custom probe and extruder names
+    # Configure probe_toolcustom_P (z_offset=1.0) and probe_toolcustom_S (z_offset=2.0)
+    custom_config = MINIMAL_PRINTER_CONFIG + MINIMAL_STEPPER_Z_CONFIG + """
+[probe_toolcustom_P]
+pin: ar10
+z_offset: 1.0
+[probe_toolcustom_S]
+pin: ar11
+z_offset: 2.0
+[extruder_P]
+step_pin: ar_eP_step
+[extruder_S]
+step_pin: ar_eS_step
+"""
+    probe_obj_custom, printer_custom, _ = load_probe_config(custom_config)
+    gcode_custom = printer_custom.lookup_object('gcode')
+    configfile_custom = printer_custom.lookup_object('configfile')
+    
+    mock_run_single_probe.side_effect = [ # Need to re-assign for the new printer instance's probe
+        ([10, 10, 0.5],), 
+        ([10, 10, 0.3],)  # Secondary (custom_S) triggers lower
+    ]
+     # Expected new T1 z_offset = 2.0 - (0.3 - 0.5) = 2.2
+    with mock.patch.object(configfile_custom, 'set') as mock_config_set_custom:
+        gcode_custom.run_script_from_command(
+            "CALIBRATE_DUAL_Z_OFFSET X=10 Y=10 "
+            "PRIMARY_PROBE_NAME=custom_P SECONDARY_PROBE_NAME=custom_S "
+            "PRIMARY_EXTRUDER_NAME=extruder_P SECONDARY_EXTRUDER_NAME=extruder_S"
+        )
+        mock_config_set_custom.assert_any_call("probe_toolcustom_S", "z_offset", "2.200")
+
+
+@mock.patch('klippy.extras.probe.HomingViaProbeHelper.run_probe')
+def test_basic_probe_command_with_active_probe(mock_hvph_run_probe):
+    probe_obj, printer, cfg = load_probe_config(MULTI_PROBE_CONFIG_FOR_SWITCHING)
+    gcode = printer.lookup_object('gcode')
+    
+    # Activate probe_tool0
+    gcode.run_script_from_command("SET_ACTIVE_PROBE PROBE=0")
+    assert probe_obj.active_probe_name == "0"
+    
+    # Simulate PROBE command
+    # We need to ensure that the HomingViaProbeHelper instance used by ProbeSessionHelper
+    # has the correct mcu_probe.
+    # The mock is on HomingViaProbeHelper.run_probe. We can check the 'self' arg of the mock call.
+    gcode.run_script_from_command("PROBE")
+    
+    # Check that HomingViaProbeHelper's run_probe was called
+    mock_hvph_run_probe.assert_called()
+    # The 'self' argument of the mock_hvph_run_probe call is the HomingViaProbeHelper instance
+    homing_helper_instance_for_probe0 = mock_hvph_run_probe.call_args[0][0]
+    assert homing_helper_instance_for_probe0.mcu_probe is probe_obj.probe_endstops["0"]
+    
+    mock_hvph_run_probe.reset_mock()
+
+    # Activate probe_tool1
+    gcode.run_script_from_command("SET_ACTIVE_PROBE PROBE=1")
+    assert probe_obj.active_probe_name == "1"
+
+    gcode.run_script_from_command("PROBE")
+    mock_hvph_run_probe.assert_called()
+    homing_helper_instance_for_probe1 = mock_hvph_run_probe.call_args[0][0]
+    assert homing_helper_instance_for_probe1.mcu_probe is probe_obj.probe_endstops["1"]
+
+# TODO: Add tests for CALIBRATE_DUAL_Z_OFFSET
+# TODO: Add tests for basic probing commands with active probe

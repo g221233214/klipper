@@ -193,6 +193,85 @@ In either case, it is a good idea to wait several minutes after the
 desired temperature is reached, so that the printer apparatus is
 consistently at the desired temperature.
 
+## Calibrating Multiple Probes on Different Toolheads
+
+For printers with multiple independent toolheads (e.g., IDEX, dual carriage),
+where each toolhead has its own probe, it's crucial to calibrate the relative
+Z-offset between these probes. This ensures that when one toolhead is active,
+its nozzle is at the correct height relative to the bed, consistent with the
+other toolheads.
+
+Klipper supports configuring multiple probes using sections like
+`[probe_tool0]`, `[probe_tool1]`, etc., in the `printer.cfg` file. Each
+section defines the parameters for an individual probe (see
+[Config Reference](Config_Reference.md#multiple-probe-configuration) for details).
+
+The primary command for calibrating the Z-offset of one probe relative to
+another is `CALIBRATE_DUAL_Z_OFFSET`.
+
+### Using `CALIBRATE_DUAL_Z_OFFSET`
+
+The `CALIBRATE_DUAL_Z_OFFSET` command automates the process of finding the
+difference in Z trigger heights between two probes and applies this difference
+to the `z_offset` of the secondary probe.
+
+**Purpose:**
+To adjust the `z_offset` of a secondary probe so that its associated nozzle
+operates at the same effective Z height as the primary (reference) nozzle.
+
+**Process:**
+1. The command first homes the printer.
+2. It activates the primary extruder (e.g., `extruder`), which should
+   automatically activate the associated primary probe (e.g., `probe_tool0`).
+3. It probes a specified X,Y coordinate with the primary probe.
+4. It then activates the secondary extruder (e.g., `extruder1`), which should
+   activate the secondary probe (e.g., `probe_tool1`).
+5. It probes the exact same X,Y coordinate with the secondary probe.
+6. Klipper calculates the difference between the Z trigger heights recorded by
+   the two probes.
+7. This difference is then used to adjust the `z_offset` value in the
+   configuration section of the *secondary probe*. The primary probe's
+   `z_offset` remains unchanged.
+
+**Example:**
+```
+CALIBRATE_DUAL_Z_OFFSET X=100 Y=100 PRIMARY_PROBE_NAME=0 SECONDARY_PROBE_NAME=1
+```
+This command would use `probe_tool0` as the reference and adjust the `z_offset`
+of `probe_tool1`. The default extruder names (`extruder` and `extruder1`)
+would be used to activate the respective toolheads.
+
+Refer to the [G-Codes documentation](G-Codes.md#calibrate_dual_z_offset) for
+full parameter details.
+
+**Important:** After the `CALIBRATE_DUAL_Z_OFFSET` command completes, the
+calculated adjustment is applied to the running configuration. To make this
+change permanent, you **must** run the `SAVE_CONFIG` command and restart Klipper.
+
+### Impact of Multiple Probes on Other Calibrations
+
+Standard calibration routines in Klipper that utilize a Z probe (such as
+`PROBE_CALIBRATE` for individual probe Z offset, `BED_MESH_CALIBRATE`,
+`Z_TILT_ADJUST`, `DELTA_CALIBRATE`, `QUAD_GANTRY_LEVEL`, etc.) will use the
+probe that is **currently active**.
+
+When working with a multi-probe system:
+- **Ensure the Correct Tool is Active:** Before initiating any probe-based
+  calibration, make sure the toolhead (extruder) whose associated probe you
+  intend to use or calibrate is active. You can activate an extruder using the
+  `ACTIVATE_EXTRUDER T<index>` command (e.g., `ACTIVATE_EXTRUDER T0`).
+- **Manual Probe Activation:** Alternatively, you can use the
+  `SET_ACTIVE_PROBE PROBE=<name>` command to manually select which probe's
+  configuration should be used for subsequent probing operations. This can be
+  useful if you want to perform a calibration with a specific probe regardless
+  of the currently active extruder.
+
+For example, to calibrate the Z offset of `probe_tool1` using the standard
+`PROBE_CALIBRATE` routine, you would first activate `extruder1` (or use
+`SET_ACTIVE_PROBE PROBE=1`), and then run `PROBE_CALIBRATE`.
+The `CALIBRATE_DUAL_Z_OFFSET` command handles the activation of extruders
+internally as part of its process.
+
 To check for a temperature bias, start with the printer at room
 temperature and then home the printer, move the head to a position
 near the center of the bed, and run the `PROBE_ACCURACY` command. Note

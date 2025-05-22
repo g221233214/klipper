@@ -514,6 +514,7 @@ class ToolHead:
         ea_trapq = extruder.get_trapq()
         if ea_trapq is not None:
             self.flush_trapqs.append(ea_trapq)
+        self.printer.send_event("toolhead:active_extruder_changed", extruder.get_name())
     def get_extruder(self):
         return self.extra_axes[0]
     def add_extra_axis(self, ea, axis_pos):

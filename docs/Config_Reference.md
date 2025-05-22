@@ -2062,10 +2062,22 @@ pins:
 Z height probe. One may define this section to enable Z height probing
 hardware. When this section is enabled, PROBE and QUERY_PROBE extended
 [g-code commands](G-Codes.md#probe) become available. Also, see the
-[probe calibrate guide](Probe_Calibrate.md). The probe section also
-creates a virtual "probe:z_virtual_endstop" pin. One may set the
-stepper_z endstop_pin to this virtual pin on cartesian style printers
-that use the probe in place of a z endstop. If using
+[probe calibrate guide](Probe_Calibrate.md).
+
+**Note:** This section is primarily for single-probe configurations. For
+printers with multiple extruders/toolheads, each potentially having its own
+probe, refer to the "[Multiple Probe Configuration](#multiple-probe-configuration)"
+section below. If a `[probe]` section is defined alongside any
+`[probe_tool<suffix>]` sections, Klipper will raise a configuration error.
+However, if no specific `[probe_tool0]` section is found but a legacy `[probe]`
+section exists, the system may load the `[probe]` section as a default probe
+(typically named `default_legacy_probe`) if an extruder named "extruder" (tool 0)
+is activated. It is recommended to use the `[probe_tool<suffix>]` sections exclusively
+for new multi-probe configurations to avoid ambiguity.
+
+The probe section also creates a virtual "probe:z_virtual_endstop" pin.
+One may set the stepper_z endstop_pin to this virtual pin on cartesian
+style printers that use the probe in place of a z endstop. If using
 "probe:z_virtual_endstop" then do not define a position_endstop in the
 stepper_z config section.
 
@@ -2127,6 +2139,77 @@ z_offset:
 #   issue any commands here that move the toolhead. The default is to
 #   not run any special G-Code commands on deactivation.
 ```
+
+### Multiple Probe Configuration
+
+For printers with multiple independent extruders or toolheads, each potentially
+equipped with its own Z probe, Klipper allows defining separate configurations
+for each probe. This is achieved by creating config sections with a specific
+prefix:
+
+```
+[probe_tool<suffix>]
+```
+
+Where `<suffix>` is a unique identifier for the probe, often corresponding to
+the tool number or a descriptive name (e.g., "0", "1", "left_probe"). This
+suffix is used by the `SET_ACTIVE_PROBE PROBE=<suffix>` command and for automatic
+probe switching.
+
+Each `[probe_tool<suffix>]` section defines a complete, independent probe and
+accepts all the parameters available in the standard `[probe]` section,
+including but not limited to:
+
+*   `pin`: Probe detection pin.
+*   `x_offset`: The distance (in mm) between the probe and the nozzle along the x-axis.
+*   `y_offset`: The distance (in mm) between the probe and the nozzle along the y-axis.
+*   `z_offset`: The distance (in mm) between the bed and the nozzle when the probe triggers.
+*   `speed`: Speed (in mm/s) of the Z axis when probing.
+*   `lift_speed`: Speed (in mm/s) of the Z axis when lifting the probe.
+*   `samples`: The number of times to probe each point.
+*   `sample_retract_dist`: The distance (in mm) to lift the toolhead between each sample.
+*   `samples_result`: Calculation method for multiple samples (average or median).
+*   `samples_tolerance`: Maximum Z distance between samples.
+*   `samples_tolerance_retries`: Number of retries if tolerance is exceeded.
+*   `activate_gcode`: G-Code to execute before each probe attempt.
+*   `deactivate_gcode`: G-Code to execute after each probe attempt.
+*   `deactivate_on_each_sample`: Whether to run deactivation gcode between samples.
+
+**Example:**
+
+```
+[probe_tool0]
+pin: ^P1.24
+x_offset: 25
+z_offset: 1.5
+speed: 5.0
+
+[probe_tool1]
+pin: ^P1.25
+x_offset: -15
+z_offset: 1.8
+speed: 8.0
+samples: 3
+```
+
+**Automatic Probe Switching:**
+
+When multiple probes are configured using the `[probe_tool<suffix>]` format,
+Klipper will attempt to automatically switch the active probe when the active
+extruder changes (e.g., via `ACTIVATE_EXTRUDER T0` or `ACTIVATE_EXTRUDER T1`).
+The mapping convention is as follows:
+*   An extruder named `extruder` (or `T0`) will typically map to a probe section named `[probe_tool0]`.
+*   An extruder named `extruder1` (or `T1`) will typically map to `[probe_tool1]`.
+*   An extruder named `extruder_custom_name` will typically map to `[probe_toolcustom_name]`.
+
+If an extruder is activated for which no corresponding `probe_tool<suffix>`
+section exists, the active probe will not change, and a warning may be logged.
+The active probe can also be set manually using the `SET_ACTIVE_PROBE`
+G-code command.
+
+Each `[probe_tool<suffix>]` section also creates its own virtual endstop pin,
+named `probe_tool<suffix>:z_virtual_endstop`. This can be useful for printers
+where each toolhead homes its Z axis independently using its own probe.
 
 ### [bltouch]
 
