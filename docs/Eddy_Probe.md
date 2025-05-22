@@ -69,6 +69,14 @@ section to 0.000 and skip the manual paper test. This assumes the eddy
 current probe is accurately reporting the nozzle's contact point with
 the bed.
 
+### Automatic `PROBE_CALIBRATE`
+
+When an eddy current probe is active, the `PROBE_CALIBRATE` command now
+runs completely automatically.  After the initial probe move, Klipper
+will slowly lower the nozzle while monitoring the probe's frequency and
+stop when successive readings show almost no change.  The resulting
+position is then used to set the probe's `z_offset`.
+
 ## Thermal Drift Calibration
 
 As with all inductive probes, eddy current probes are subject to
