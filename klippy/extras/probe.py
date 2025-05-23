@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
+import collections
 import pins
 from . import manual_probe
 
@@ -474,6 +475,9 @@ class ProbeParameterHelper:
                                              minval=0)
         # New parameter
         self.tap_direct_z_offset = config.getboolean('tap_direct_z_offset', False)
+        self.auto_calibrate_tolerance = config.getfloat('auto_calibrate_tolerance', 0.005, minval=0.)
+        self.auto_calibrate_min_samples = config.getint('auto_calibrate_min_samples', 3, minval=2)
+        self.auto_calibrate_max_retries = config.getint('auto_calibrate_max_retries', 10, minval=1)
     def get_probe_params(self, gcmd=None):
         if gcmd is None:
             gcmd = self.dummy_gcode_cmd
@@ -487,13 +491,19 @@ class ProbeParameterHelper:
         samples_retries = gcmd.get_int("SAMPLES_TOLERANCE_RETRIES",
                                        self.samples_retries, minval=0)
         samples_result = gcmd.get("SAMPLES_RESULT", self.samples_result)
+        auto_calibrate_tolerance = gcmd.get_float("AUTO_CALIBRATE_TOLERANCE", self.auto_calibrate_tolerance, minval=0.)
+        auto_calibrate_min_samples = gcmd.get_int("AUTO_CALIBRATE_MIN_SAMPLES", self.auto_calibrate_min_samples, minval=2)
+        auto_calibrate_max_retries = gcmd.get_int("AUTO_CALIBRATE_MAX_RETRIES", self.auto_calibrate_max_retries, minval=1)
         return {'probe_speed': probe_speed,
                 'lift_speed': lift_speed,
                 'samples': samples,
                 'sample_retract_dist': sample_retract_dist,
                 'samples_tolerance': samples_tolerance,
                 'samples_tolerance_retries': samples_retries,
-                'samples_result': samples_result}
+                'samples_result': samples_result,
+                'auto_calibrate_tolerance': auto_calibrate_tolerance,
+                'auto_calibrate_min_samples': auto_calibrate_min_samples,
+                'auto_calibrate_max_retries': auto_calibrate_max_retries}
 
 # Helper to track multiple probe attempts in a single command
 class ProbeSessionHelper:
