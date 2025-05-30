@@ -55,6 +55,55 @@ surface temperature or sensor hardware temperature can skew the
 results. It is important that calibration and probing is only done
 when the printer is at a stable temperature.
 
+## TAP-style Calibration with `tap_direct_z_offset`
+
+For users employing an eddy current sensor in a 'TAP-style' physical
+configuration (where the nozzle itself is the sensed point, and
+`x_offset`/`y_offset` in the `[probe]` or `[probe_tool <name>]` section
+are set to 0), a simplified Z offset calibration process is available.
+After performing the standard `PROBE_EDDY_CURRENT_CALIBRATE` for the
+sensor, you can set `tap_direct_z_offset: true` in your `[probe]` or
+`[probe_tool <name>]` configuration section. With this enabled, running
+`PROBE_CALIBRATE` will automatically set the `z_offset` for that probe
+section to 0.000 and skip the manual paper test. This assumes the eddy
+current probe is accurately reporting the nozzle's contact point with
+the bed.
+
+## Automatic Z-Offset Calibration using `AUTO_CALIBRATE_EDDY_Z_OFFSET`
+
+For LDC-based eddy current probes, Klipper offers an experimental automatic
+Z-offset calibration command: `AUTO_CALIBRATE_EDDY_Z_OFFSET`. This command
+attempts to determine the Z-offset by algorithmically detecting the bed
+surface based on changes in the sensor's frequency readings (dF/dZ) as the
+nozzle approaches the bed.
+
+**Purpose:**
+This method can provide an alternative to the manual paper test typically
+performed during `PROBE_CALIBRATE`. If tuned correctly, it can determine the
+point at which the nozzle (or the sensing surface if not a TAP-style probe)
+makes contact with the bed. The Z machine coordinate at this contact point
+is then used as the new `z_offset` for the active probe.
+
+**Usage:**
+1. Ensure your eddy current probe is configured in a
+   `[probe_eddy_current <chip_name>]` section.
+2. It's recommended to first run `LDC_CALIBRATE_DRIVE_CURRENT` for your
+   sensor.
+3. Home the Z axis.
+4. Run `AUTO_CALIBRATE_EDDY_Z_OFFSET CHIP=<chip_name>`, replacing
+   `<chip_name>` with the name of your sensor's config section.
+
+The command requires careful tuning of several `auto_cal_*` parameters
+within the `[probe_eddy_current <chip_name>]` section of your
+`printer.cfg`. For details on these parameters, refer to the
+[Automatic Z-Offset Calibration Parameters](Config_Reference.md#automatic-z-offset-calibration-parameters-auto_calibrate_eddy_z_offset)
+in the Config_Reference.md. For the G-Code command syntax and important
+notes, see the [AUTO_CALIBRATE_EDDY_Z_OFFSET](G-Codes.md#auto_calibrate_eddy_z_offset)
+documentation.
+
+After the command completes, if successful, you can use `SAVE_CONFIG`
+to store the new `z_offset`.
+
 ## Thermal Drift Calibration
 
 As with all inductive probes, eddy current probes are subject to

@@ -75,6 +75,7 @@ class DriveCurrentCalibrate:
 # Interface class to LDC1612 mcu support
 class LDC1612:
     def __init__(self, config, calibration=None):
+        self.config_section = config # ADD THIS LINE to store the config section
         self.printer = config.get_printer()
         self.calibration = calibration
         self.dccal = DriveCurrentCalibrate(config, self)

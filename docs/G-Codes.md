@@ -1237,6 +1237,37 @@ appropriate DRIVE_CURRENT for the sensor. After running this command
 use the SAVE_CONFIG command to store that new setting in the
 printer.cfg config file.
 
+#### AUTO_CALIBRATE_EDDY_Z_OFFSET
+`AUTO_CALIBRATE_EDDY_Z_OFFSET CHIP=<chip_name>`: Automatically
+calibrates the Z-offset for a specified LDC-based eddy current sensor
+(e.g., LDC1612). This command performs a controlled descent towards the
+bed, monitoring the sensor's frequency readings to detect the point of
+contact by analyzing the change in frequency (dF/dZ). Once contact is
+determined, it calculates a new `z_offset` for the probe defined in the
+`[probe]` or `[probe_tool <name>]` section that uses this eddy sensor. The
+new `z_offset` is the machine Z coordinate of the detected contact point.
+This allows the printer to define Z=0 at this contact point. The command
+requires the `CHIP` parameter, which must match the name given in the
+`[probe_eddy_current <chip_name>]` config section (e.g., if you have
+`[probe_eddy_current my_sensor]`, use `AUTO_CALIBRATE_EDDY_Z_OFFSET CHIP=my_sensor`).
+
+Parameters:
+- `CHIP=<name>`: (Required) The name of the
+  `[probe_eddy_current <name>]` section to use for the calibration.
+
+Important Notes:
+- This command is experimental and requires careful tuning of the
+  `auto_cal_*` parameters in the `[probe_eddy_current <chip_name>]`
+  section to achieve reliable results.
+- Ensure the Z axis is homed before running this command.
+- It is recommended to have performed the standard
+  `LDC_CALIBRATE_DRIVE_CURRENT` for the chip first.
+- The determined `z_offset` will be applied to the active probe's
+  configuration section that is presumably using this eddy sensor. Use
+  `SAVE_CONFIG` to store the new offset permanently.
+- This method attempts to replace the manual paper test for Z-offset
+  calibration by algorithmically detecting the bed surface.
+
 ### [pwm_cycle_time]
 
 The following command is available when a

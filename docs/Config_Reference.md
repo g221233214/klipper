@@ -2138,6 +2138,20 @@ z_offset:
 #   completes. See docs/Command_Templates.md for G-Code format. Do not
 #   issue any commands here that move the toolhead. The default is to
 #   not run any special G-Code commands on deactivation.
+#tap_direct_z_offset: False
+#   If true, enables a TAP-style Z offset calibration. This option is
+#   intended for use with well-calibrated eddy current probes that are
+#   physically configured in a TAP style (nozzle as the probe, meaning
+#   x_offset and y_offset should typically be 0). When this parameter
+#   is true, running the `PROBE_CALIBRATE` command will perform an
+#   initial automatic probe and then directly set the `z_offset` for
+#   this probe's configuration section to 0.000, bypassing the manual
+#   paper test. It is crucial that the underlying eddy current sensor
+#   (if used) has already been accurately calibrated using
+#   `PROBE_EDDY_CURRENT_CALIBRATE` before enabling this mode. Using
+#   `tap_direct_z_offset: true` with other probe types or improperly
+#   configured eddy current probes may lead to an incorrect Z offset
+#   and potential printer damage.
 ```
 
 ### Multiple Probe Configuration
@@ -2361,6 +2375,51 @@ sensor_type: ldc1612
 #samples_tolerance:
 #samples_tolerance_retries:
 #   See the "probe" section for information on these parameters.
+
+#### Automatic Z-Offset Calibration Parameters (`AUTO_CALIBRATE_EDDY_Z_OFFSET`)
+#auto_cal_fast_descent_speed: 5.0
+#   Speed (mm/s) for the initial fast descent towards the bed during
+#   the automatic calibration process.
+#auto_cal_slow_descent_speed: 1.0
+#   Speed (mm/s) for the fine-stepping descent phase during automatic
+#   contact detection.
+#auto_cal_fine_step_z: 0.005
+#   Z step size (mm) for each fine-step during the slow descent phase.
+#   Smaller values increase resolution but take longer.
+#auto_cal_settling_time: 0.020
+#   Time (seconds) to wait for sensor readings to stabilize after each
+#   Z fine-step.
+#auto_cal_samples_per_step: 5
+#   Number of sensor readings to take at each Z fine-step. These
+#   samples are averaged to get a more stable frequency reading.
+#auto_cal_derivative_window: 3
+#   Number of averaged frequency readings (from consecutive Z steps)
+#   to use for calculating the derivative (dF/dZ). A larger window
+#   smooths the derivative but introduces more lag. Minimum is 2.
+#auto_cal_contact_threshold_factor: 0.3
+#   A factor (0.0 to 1.0) used to determine contact. Contact is
+#   suspected when the absolute current dF/dZ drops below this factor
+#   multiplied by the recent average absolute dF/dZ observed during
+#   the approach.
+#auto_cal_min_approach_dfdz: 10.0
+#   The minimum absolute dF/dZ value that must be observed before the
+#   contact detection logic (based on `auto_cal_contact_threshold_factor`)
+#   becomes active. This helps prevent premature contact detection due
+#   to noise when far from the bed.
+#auto_cal_max_overdrive_z: 0.05
+#   Maximum distance (mm) the probe will move down after initial
+#   contact detection to confirm the contact. If 0, no overdrive is
+#   performed. (Note: Current implementation notes this as simplified;
+#   actual confirmation logic might vary).
+#auto_cal_retract_distance: 2.0
+#   Distance (mm) to retract the Z axis after the calibration
+#   procedure is completed or aborted.
+#auto_cal_start_z_above_bed:
+#   Optional. If set, the Z axis will first move to this height (mm)
+#   relative to the homed Z position before starting the calibration
+#   descent. Useful if the current Z position might be too close or
+#   too far from the bed for an effective start. Default is to start
+#   from the current Z position.
 ```
 
 ### [axis_twist_compensation]
